@@ -344,7 +344,7 @@ class DeepseaProblem(problem.Problem):
   @property
   def chunk_size(self):
     """n-gram/k-mer size."""
-    return 4
+    return 1
   
   @property
   def num_binary_predictions(self):
@@ -597,8 +597,8 @@ class TftiDeepseaProblem(DeepseaProblem):
     :param cellType1 Name of cell type 1
     :param cellType2 Name of cell type 2
     '''
-    
-    namefile = '../docs/deepsea_label_names.txt'
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    namefile = dir_path + '/deepsea_label_names.txt'
     names = self.load_names(namefile)
     
     valid_tfs = list(map(lambda x: x.split('|')[1],names[125:815] ))
@@ -796,7 +796,8 @@ class TftiTransformer(transformer.Transformer):
     """
     hparams = self._hparams
 
-    hparams.ffn_layer = "conv_relu_conv"
+    hparams.ffn_layer = "conv_hidden_relu_with_sepconv"
+    hparams.self_attention_type = "local_unmasked"
 
     encoder_output, encoder_decoder_attention_bias = self.encode(
         inputs=features["inputs"],
@@ -806,6 +807,7 @@ class TftiTransformer(transformer.Transformer):
     # No positional embeddings on decoder side.
 
     hparams.ffn_layer = "dense_relu_dense"
+    hparams.self_attention_type = "dot_product"
 
     decoder_output = self.decode(
         decoder_input=common_layers.flatten4d3d(features["latents"]),
