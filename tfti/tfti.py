@@ -478,6 +478,10 @@ class DeepseaProblem(problem.Problem):
     }
     data_items_to_decoders = None
     return (data_fields, data_items_to_decoders)
+
+  def preprocess_dev_example(self, example, mode, hparams):
+    """See base class."""
+    return self.preprocess_example(example, mode, hparams)
   
   def preprocess_example(self, example, mode, hparams):
     """Preprocess the model inputs.
@@ -600,8 +604,7 @@ class TftiDeepseaProblem(DeepseaProblem):
     
     # Print out sorted TFs
     tf.logging.info("TFs for CellType %s: %s" 
-                    % (list(map(lambda x: x[1].split('|')[1], cellType1_items)), 
-                    overlapping_tfs))
+                    % (cellType1, overlapping_tfs))
 
     cellType2_items = []
     seen = set()
@@ -650,12 +653,12 @@ class TranscriptionFactorDeepseaProblem(TftiDeepseaProblem):
 class Gm12878DeepseaProblem(TftiDeepseaProblem):
   """GM12878 Cell type specific imputation problem"""
 
-  def preprocess_example(self, example, mode, hparams):
+  def preprocess_example(self, example, mode, hparams, cellType1 = 'GM12878', cellType2 = 'H1-hESC'):
     example = super().preprocess_example(example, mode, hparams)
     # Indices for TF labels specific to GM12878 cell type.
     # These are ordered so TFs are alphabetical
     
-    gather_indices = super().getOverlappingIndicesForCellType('GM12878', 'H1-hESC')
+    gather_indices = super().getOverlappingIndicesForCellType(cellType1, cellType2)
     
     # Argsort indices to preserve ordering.
     argsort_indices = np.argsort(gather_indices)
@@ -673,6 +676,8 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     example["metrics_weights"] = tf.gather(metrics_weights, argsort_indices)
     return example
 
+  def preprocess_dev_example(self, example, mode, hparams):
+    return self.preprocess_example(example, mode, hparams, cellType1 = 'H1-hESC', cellType2 = 'GM12878')
 
 @registry.register_problem("genomics_binding_deepsea_h1hesc")
 class H1hESCDeepseaProblem(TftiDeepseaProblem):
