@@ -512,10 +512,6 @@ class DeepseaProblem(problem.Problem):
     }
     data_items_to_decoders = None
     return (data_fields, data_items_to_decoders)
-
-  def preprocess_dev_example(self, example, mode, hparams):
-    """See base class."""
-    return self.preprocess_example(example, mode, hparams)
   
   def preprocess_example(self, example, mode, hparams):
     """Preprocess the model inputs.
@@ -624,6 +620,8 @@ class TftiDeepseaProblem(DeepseaProblem):
 
     cellType1_final_positions = [(i,j) for i, j in cellType1_positions if j.split('|')[1] in overlapping_tfs]
     cellType2_final_positions = [(i,j) for i, j in  cellType2_positions if j.split('|')[1] in overlapping_tfs]
+    
+
 
 
     # filter out duplicates for both cell types
@@ -845,6 +843,7 @@ def tfti_transformer_debug():
   hparams.num_hidden_layers = 2
   hparams.hidden_size = 8
   hparams.num_heads = 2
+  hparams.add_hparam("pretrain_steps", 0)
   hparams.latent_keep_prob = 0.5
   hparams.pos_weight = 10
   return hparams
