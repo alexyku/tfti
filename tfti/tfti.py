@@ -641,7 +641,7 @@ class TftiDeepseaProblem(DeepseaProblem):
     # Get marks for each cell type
     cell_type_1_marks =  [i[1].split("|")[1] for i in cell_type_1_pos]
     cell_type_2_marks =  [i[1].split("|")[1] for i in cell_type_2_pos]
-    
+
     # Get overlapping marks between both cell types.
     overlapping_marks = list(set(cell_type_1_marks) & set(cell_type_2_marks))
 
@@ -674,14 +674,14 @@ class TftiDeepseaProblem(DeepseaProblem):
 
     cell_type_2_items = sorted(cell_type_2_items, key=lambda i: i[1])
 
-    # Verify that TFs match between cell types.
+    # Verify that marks match between cell types.
     for i, item in enumerate(cell_type_2_items):
       assert(cell_type_2_items[i][1].split("|")[1] ==
              cell_type_1_items[i][1].split("|")[1])
 
     # These are the indices we are using for the cell type 1 model.
     cell_type_1_indices = list(map(lambda x: x[0], cell_type_1_items))
-    return cell_type_1_indices
+    return (cell_type_1_indices, cell_type_1_items)
 
 
 @registry.register_problem("genomics_binding_deepsea_tf")
@@ -725,20 +725,20 @@ class TranscriptionFactorDeepseaProblem(TftiDeepseaProblem):
 class Gm12878DeepseaProblem(TftiDeepseaProblem):
   """GM12878 Cell type specific imputation problem"""
 
-  def targets_gather_indices(self):
+  def targets_gather_indices(self, cell_type_1, cell_type_2):
     """Returns indices to gather `targets`, `latents` and `metrics_weights`.
 
     Returns:
       A list of indices between [0, self.num_binary_predictions).
     """
-    return self.get_overlapping_indices_for_cell_type("GM12878", "H1-hESC")
+    return self.get_overlapping_indices_for_cell_type(cell_type_1, cell_type_2)[0]
 
-  def preprocess_example(self, example, mode, hparams):
+  def preprocess_example(self, example, mode, hparams, cell_type_1 = "GM12878", cell_type_2 = "H1-hESC"):
     example = super().preprocess_example(example, mode, hparams)
     # Indices for TF labels specific to GM12878 cell type.
     # These are ordered so TFs are alphabetical
     
-    gather_indices = self.targets_gather_indices()
+    gather_indices = self.targets_gather_indices(cell_type_1, cell_type_2)
     
     # Argsort indices to preserve ordering.
     argsort_indices = np.argsort(gather_indices)
@@ -756,41 +756,8 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     example["metrics_weights"] = tf.gather(metrics_weights, argsort_indices)
     return example
 
-
-@registry.register_problem("genomics_binding_deepsea_h1hesc")
-class H1hescDeepseaProblem(TftiDeepseaProblem):
-  """H1-hESC Cell type specific imputation problem"""
-
-  def targets_gather_indices(self):
-    """Returns indices to gather `targets`, `latents` and `metrics_weights`.
-
-    Returns:
-      A list of indices between [0, self.num_binary_predictions).
-    """
-    return self.get_overlapping_indices_for_cell_type("H1-hESC", "GM12878")
-
-  def preprocess_example(self, example, mode, hparams):
-    example = super().preprocess_example(example, mode, hparams)
-    # Indices for TF labels specific to GM12878 cell type.
-    # These are ordered so TFs are alphabetical
-    
-    gather_indices = self.targets_gather_indices()
-    
-    # Argsort indices to preserve ordering.
-    argsort_indices = np.argsort(gather_indices)
-    gather_indices_sorted = np.sort(gather_indices)
-
-    # Keep targets and latents corresponding to H1-hESC.
-    targets = tf.gather(example["targets"], gather_indices_sorted)
-    latents = tf.gather(example["latents"], gather_indices_sorted)
-    metrics_weights = tf.gather(example["metrics_weights"],
-                                gather_indices_sorted)
-    
-    # Ensure sure tensors are sorted by alphabetical TFs.
-    example["targets"] = tf.gather(targets, argsort_indices)
-    example["latents"] = tf.gather(latents, argsort_indices)
-    example["metrics_weights"] = tf.gather(metrics_weights, argsort_indices)
-    return example
+  def preprocess_dev_example(self, example, mode, hparams):
+    return self.preprocess_example(example, mode, hparams, cell_type_1 = 'H1-hESC', cell_type_2 = 'GM12878')
 
 
 ################################################################################
