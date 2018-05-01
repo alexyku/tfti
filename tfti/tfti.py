@@ -781,49 +781,17 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     return example
 
 
-@registry.register_problem("genomics_binding_deepsea_h1hesc")
-class H1hescDeepseaProblem(TftiDeepseaProblem):
-  """H1-hESC Cell type specific imputation problem"""
-
-  def targets_gather_indices(self):
-    """Returns indices to gather `targets`, `latents` and `metrics_weights`.
-
-    Returns:
-      A list of indices between [0, self.num_binary_predictions).
-    """
-    return self.get_overlapping_indices_for_cell_type("H1-hESC", "GM12878")
-
-  def preprocess_example(self, example, mode, hparams):
-    example = super().preprocess_example(example, mode, hparams)
-    # Indices for TF labels specific to GM12878 cell type.
-    # These are ordered so TFs are alphabetical
-    
-    gather_indices = self.targets_gather_indices()
-    
-    # Argsort indices to preserve ordering.
-    argsort_indices = np.argsort(gather_indices)
-    gather_indices_sorted = np.sort(gather_indices)
-
-    # Keep targets and latents corresponding to H1-hESC.
-    targets = tf.gather(example["targets"], gather_indices_sorted)
-    latents = tf.gather(example["latents"], gather_indices_sorted)
-    metrics_weights = tf.gather(example["metrics_weights"],
-                                gather_indices_sorted)
-    
-    # Ensure sure tensors are sorted by alphabetical TFs.
-    example["targets"] = tf.gather(targets, argsort_indices)
-    example["latents"] = tf.gather(latents, argsort_indices)
-    example["metrics_weights"] = tf.gather(metrics_weights, argsort_indices)
-    return example
-
-
 @registry.register_problem("genomics_binding_deepsea_multicell")
 class TftiMulticellProblem(TftiDeepseaProblem):
   """Imputation problem accross multiple cell types"""
 
   @property
   def cell_types(self):
-    return ['HeLa-S3', 'GM12878', 'H1-hESC', 'HepG2', 'K562']
+    return ['HeLa-S3', 'GM12878', 'HepG2', 'K562','H1-hESC']
+
+  @property
+  def test_cell_type(self):
+    return self.cell_types[-1]
 
   def get_overlapping_indices_multicell(self):
     """Gets target indices for transcription factors for the intersection 
@@ -844,7 +812,7 @@ class TftiMulticellProblem(TftiDeepseaProblem):
     for cell_type in self.cell_types:
       assert(cell_type in valid_cell_types,
        f"{cell_type} not in list of valid cell types")
-        
+    
     # Get positions for all cell lines.
     # {cell: [(index, full mark name)]}
     position_dict = {cell_type: [(i, j) for i, j in enumerate(names)
@@ -878,13 +846,6 @@ class TftiMulticellProblem(TftiDeepseaProblem):
           cell_type_items.append(item)
 
       cell_items_dict[cell_type] = sorted(cell_type_items, key=lambda i: i[1]) 
-    
-      # Print out sorted marks.
-      tf.logging.info("%s marks for CellType %s: %s" 
-                      % (len(cell_items_dict[cell_type]),
-                      cell_type, 
-                      cell_items_dict[cell_type]))
-
 
     # Verify that TFs match between cell types.
     for cell_type_1 in self.cell_types:
@@ -898,24 +859,55 @@ class TftiMulticellProblem(TftiDeepseaProblem):
     cell_indices = {cell_type: list(map(lambda x:
                      x[0], cell_items_dict[cell_type]))
                      for cell_type in self.cell_types}
-    return cell_indices
+    
+    valid_tfs = sorted(list(map(lambda x: x[1].split('|')[1], cell_items_dict[self.cell_types[0]])))
+    tf.logging.info("Selected marks for cell types %s: %s" % (self.cell_types, valid_tfs))
+    
+    
+    return cell_indices, valid_tfs
 
   def preprocess_example(self, example, mode, hparams):
     """Makes one example for each cell type, including only intersecting marks.
 
     See base class for method signature.
     """
+    tf.logging.info(mode)
     example = super().preprocess_example(example, mode, hparams)
-    gather_indices = self.get_overlapping_indices_multicell()
+    gather_indices, _ = self.get_overlapping_indices_multicell()
     examples = []
+    
+    # get number of targets
+    target_count = len(list(gather_indices.values())[0])
 
     def gen():
       for cell_type in self.cell_types:
-        for key in ["targets", "latents", "metrics_weights"]:
-          example[key] = tf.gather(example[key], gather_indices[cell_type])
-        yield example
-
-    dataset = tf.data.Dataset.from_generator(gen, (tf.int64, tf.int64, tf.int64))
+        # Do not put test in train set!
+        if (cell_type != self.test_cell_type):
+                            
+            # Argsort indices to preserve ordering.
+            argsort_indices = np.argsort(gather_indices[cell_type])
+            gather_indices_sorted = np.sort(gather_indices[cell_type])
+            
+            for key in ["targets", "latents", "metrics_weights"]:
+                # Ensure sure tensors are sorted by alphabetical TFs.
+                z = tf.gather(example[key], gather_indices_sorted)
+                example[key] = tf.gather(z, argsort_indices)
+                yield example
+                
+    types = {"index": tf.int64, 
+                 "inputs": tf.int64, 
+                 "targets": tf.int64, 
+                 "batch_prediction_key": tf.int64,
+                 "latents": tf.int32, 
+                 "metrics_weights": tf.float32}
+    shapes = {"index": tf.TensorShape([]), 
+                  "inputs": tf.TensorShape([self.input_sequence_length/self.chunk_size, 1, 1]), 
+                  "targets": tf.TensorShape([target_count, 1, 1]), 
+                  "batch_prediction_key": tf.TensorShape([1,]),
+                  "latents": tf.TensorShape([target_count, 1, 1]), 
+                  "metrics_weights": tf.TensorShape([target_count, 1, 1])}
+    
+    dataset = tf.data.Dataset.from_generator(gen, types, shapes)
     return dataset
 
 
