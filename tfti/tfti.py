@@ -595,13 +595,37 @@ class TftiDeepseaProblem(DeepseaProblem):
     return tf.to_int32(keep_mask * tf.to_float(targets)
                        + (1.0 - keep_mask) * self.unk_id)
 
-  def preprocess_example(self, example, mode, hparams):
+  def preprocess_example(self, example, mode, hparams, cell_type_1=None, cell_type_2=None):
     """See base class."""
     example = super().preprocess_example(example, mode, hparams)
     example["latents"] = self.make_latents(example, hparams)
     # Only aggregate metrics (e.g., AUROC, AUPRC) for imputed labels.
     example["metrics_weights"] = tf.to_float(
         tf.equal(example["latents"], self.unk_id))
+    
+    # If an explicit keepmask is fed in, use that instead.
+    if hparams.latent_keep_mask != "":
+      tf.logging.info(f"Using `latent_keep_mask`: {hparams.latent_keep_mask}")
+    
+      _, indices_marks = self.get_overlapping_indices_for_cell_type(cell_type_1, cell_type_2)
+      marks = list(map(lambda x: x[1].split('|')[1], indices_marks))
+    
+      hparams.latent_keep_mask = hparams.latent_keep_mask.split('/')
+                                                            
+      assert(all(x in marks for x in set(hparams.latent_keep_mask)))
+      assert(len(hparams.latent_keep_mask) <= len(marks))
+    
+      filtered_indices = [x[0] for x in indices_marks if x[1].split('|')[1] in
+                            hparams.latent_keep_mask]
+    
+      tf.logging.info(filtered_indices)                         
+      
+      keep_mask = np.zeros(self.num_binary_predictions)
+      keep_mask[filtered_indices] = 1
+      keep_mask = np.array(keep_mask, dtype=np.bool)             
+      example["latent_keep_mask"] = tf.reshape(
+        keep_mask, [self.num_binary_predictions, 1, 1])
+                                                            
     return example
 
   def load_names(self, namefile):
@@ -681,7 +705,7 @@ class TftiDeepseaProblem(DeepseaProblem):
 
     # These are the indices we are using for the cell type 1 model.
     cell_type_1_indices = list(map(lambda x: x[0], cell_type_1_items))
-    return cell_type_1_indices
+    return cell_type_1_indices, cell_type_1_items
 
 
 @registry.register_problem("genomics_binding_deepsea_tf")
@@ -731,10 +755,10 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     Returns:
       A list of indices between [0, self.num_binary_predictions).
     """
-    return self.get_overlapping_indices_for_cell_type("GM12878", "H1-hESC")
+    return self.get_overlapping_indices_for_cell_type("GM12878", "H1-hESC")[0]
 
   def preprocess_example(self, example, mode, hparams):
-    example = super().preprocess_example(example, mode, hparams)
+    example = super().preprocess_example(example, mode, hparams, "GM12878", "H1-hESC")
     # Indices for TF labels specific to GM12878 cell type.
     # These are ordered so TFs are alphabetical
     
@@ -757,40 +781,134 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     return example
 
 
-@registry.register_problem("genomics_binding_deepsea_h1hesc")
-class H1hescDeepseaProblem(TftiDeepseaProblem):
-  """H1-hESC Cell type specific imputation problem"""
+@registry.register_problem("genomics_binding_deepsea_multicell")
+class TftiMulticellProblem(TftiDeepseaProblem):
+  """Imputation problem accross multiple cell types"""
 
-  def targets_gather_indices(self):
-    """Returns indices to gather `targets`, `latents` and `metrics_weights`.
+  @property
+  def cell_types(self):
+    return ['HeLa-S3', 'GM12878', 'HepG2', 'K562','H1-hESC']
+
+  @property
+  def test_cell_type(self):
+    return self.cell_types[-1]
+
+  def get_overlapping_indices_multicell(self):
+    """Gets target indices for transcription factors for the intersection 
+    of call cell types.
 
     Returns:
-      A list of indices between [0, self.num_binary_predictions).
+      Dict of lists of indices in each cell of the intersection of all cells.
+      These indices are listed in alphabetical order for consistency.
     """
-    return self.get_overlapping_indices_for_cell_type("H1-hESC", "GM12878")
+    
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    namefile = dir_path + "/deepsea_label_names.txt"
+    names = self.load_names(namefile)
+    
+    valid_cell_types = list(map(lambda x: x.split("|")[1], names))
+    
+    # Make sure cell type parameters can be found in our data. 
+    for cell_type in self.cell_types:
+      assert(cell_type in valid_cell_types,
+       f"{cell_type} not in list of valid cell types")
+    
+    # Get positions for all cell lines.
+    # {cell: [(index, full mark name)]}
+    position_dict = {cell_type: [(i, j) for i, j in enumerate(names)
+                        if cell_type in j] for cell_type in self.cell_types}
+
+    # Get marks for each cell type, to find intersection.
+    # {cell: mark type}
+    mark_dict = {cell_type: 
+                    [i[1].split("|")[1] for i in position_dict[cell_type]]
+                  for cell_type in self.cell_types}
+
+    # Get overlapping marks between all cell types.    
+    overlapping_marks = list(set.intersection(*[set(i) for i in mark_dict.values()]))
+
+    # Filter out non-overlapping marks.
+    # {cell: [(index, full mark name)]}
+    final_position_dict = {cell_type: [(i,j) for i, j in 
+                                        position_dict[cell_type] if
+                                        j.split("|")[1] in overlapping_marks]
+                                      for cell_type in self.cell_types}
+
+    # Filter out duplicates for all cell types.
+    # {cell: [(index, full mark name)]}
+    cell_items_dict = {}
+    for cell_type in self.cell_types:
+      cell_type_items = []
+      seen = set()
+      for item in final_position_dict[cell_type]:
+        if item[1].split("|")[1] not in seen:
+          seen.add(item[1].split("|")[1])
+          cell_type_items.append(item)
+
+      cell_items_dict[cell_type] = sorted(cell_type_items, key=lambda i: i[1]) 
+
+    # Verify that TFs match between cell types.
+    for cell_type_1 in self.cell_types:
+      for cell_type_2 in self.cell_types:
+        for i, _ in enumerate(cell_items_dict[cell_type]):
+          assert(cell_items_dict[cell_type_1][i][1].split("|")[1] ==
+                 cell_items_dict[cell_type_2][i][1].split("|")[1])
+
+    # These are the indices we are using.
+    # {cell: [indices sorted alphabetically]}
+    cell_indices = {cell_type: list(map(lambda x:
+                     x[0], cell_items_dict[cell_type]))
+                     for cell_type in self.cell_types}
+    
+    valid_tfs = sorted(list(map(lambda x: x[1].split('|')[1], cell_items_dict[self.cell_types[0]])))
+    tf.logging.info("Selected marks for cell types %s: %s" % (self.cell_types, valid_tfs))
+    
+    
+    return cell_indices, valid_tfs
 
   def preprocess_example(self, example, mode, hparams):
-    example = super().preprocess_example(example, mode, hparams)
-    # Indices for TF labels specific to GM12878 cell type.
-    # These are ordered so TFs are alphabetical
-    
-    gather_indices = self.targets_gather_indices()
-    
-    # Argsort indices to preserve ordering.
-    argsort_indices = np.argsort(gather_indices)
-    gather_indices_sorted = np.sort(gather_indices)
+    """Makes one example for each cell type, including only intersecting marks.
 
-    # Keep targets and latents corresponding to H1-hESC.
-    targets = tf.gather(example["targets"], gather_indices_sorted)
-    latents = tf.gather(example["latents"], gather_indices_sorted)
-    metrics_weights = tf.gather(example["metrics_weights"],
-                                gather_indices_sorted)
+    See base class for method signature.
+    """
+    tf.logging.info(mode)
+    example = super().preprocess_example(example, mode, hparams)
+    gather_indices, _ = self.get_overlapping_indices_multicell()
+    examples = []
     
-    # Ensure sure tensors are sorted by alphabetical TFs.
-    example["targets"] = tf.gather(targets, argsort_indices)
-    example["latents"] = tf.gather(latents, argsort_indices)
-    example["metrics_weights"] = tf.gather(metrics_weights, argsort_indices)
-    return example
+    # get number of targets
+    target_count = len(list(gather_indices.values())[0])
+
+    def gen():
+      for cell_type in self.cell_types:
+        # Do not put test in train set!
+        if (cell_type != self.test_cell_type):
+                            
+            # Argsort indices to preserve ordering.
+            argsort_indices = np.argsort(gather_indices[cell_type])
+            gather_indices_sorted = np.sort(gather_indices[cell_type])
+            
+            for key in ["targets", "latents", "metrics_weights"]:
+                # Ensure sure tensors are sorted by alphabetical TFs.
+                z = tf.gather(example[key], gather_indices_sorted)
+                example[key] = tf.gather(z, argsort_indices)
+                yield example
+                
+    types = {"index": tf.int64, 
+                 "inputs": tf.int64, 
+                 "targets": tf.int64, 
+                 "batch_prediction_key": tf.int64,
+                 "latents": tf.int32, 
+                 "metrics_weights": tf.float32}
+    shapes = {"index": tf.TensorShape([]), 
+                  "inputs": tf.TensorShape([self.input_sequence_length/self.chunk_size, 1, 1]), 
+                  "targets": tf.TensorShape([target_count, 1, 1]), 
+                  "batch_prediction_key": tf.TensorShape([1,]),
+                  "latents": tf.TensorShape([target_count, 1, 1]), 
+                  "metrics_weights": tf.TensorShape([target_count, 1, 1])}
+    
+    dataset = tf.data.Dataset.from_generator(gen, types, shapes)
+    return dataset
 
 
 ################################################################################
@@ -888,6 +1006,7 @@ def tfti_transformer_base():
   hparams.add_hparam("pos_weight", 25)
   hparams.add_hparam("latent_keep_prob", 0.5)
   hparams.add_hparam("pretrain_steps", 0)
+  hparams.add_hparam("latent_keep_mask", "")
   return hparams
 
 
