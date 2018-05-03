@@ -41,7 +41,6 @@ def get_problem_model_hparams(config):
   model = registry.model(config.model)(hparams, tf.estimator.ModeKeys.EVAL)
   return (problem, model, hparams)
 
-
 def _get_infer_fn(config):
   """Returns an inference function from a config."""
   with tf.Graph().as_default():
@@ -117,3 +116,22 @@ def get_infer_fn(problem, model, hparams_set, hparams, checkpoint_path):
   """Simple wrapper around _get_infer_fn."""
   config = get_config(problem, model, hparams_set, hparams, checkpoint_path)
   return _get_infer_fn(config)
+
+
+
+def get_tfs(problem, cell_type_1, cell_type_2):
+    items = problem.get_overlapping_indices_for_cell_type(cell_type_1, cell_type_2)[1]
+    return list(map(lambda x: x[1].split('|')[1], items))
+                
+def get_keep_mask_for_marks(problem, selected_marks, cell_type):
+    keep_mask = [0] * problem.num_binary_predictions
+    # load in names
+    namefile = "./deepsea_label_names.txt"
+    names = enumerate(problem.load_names(namefile))
+    # get filtered indices of marks and cell types
+    selected = list(filter(lambda x: (x[1].split('|')[0] == cell_type) & (x[1].split('|')[1] in selected_marks), names))
+                    
+    for i in selected:
+        keep_mask[i[0]]=1
+                    
+    return keep_mask
