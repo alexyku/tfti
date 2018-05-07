@@ -20,14 +20,13 @@ sys.path.append("../tfti")
 import tfti
 import tfti_infer
 
-
-
 from itertools import combinations
 import math
 import bisect
 import sys
 from skpp import ProjectionPursuitRegressor
 import numpy as np
+import numpy.ma as ma
 import random
 
 sys.path.append("../tfti")
@@ -37,6 +36,10 @@ sys.path.append("../shapley")
 import shapley
 
 import time
+import sys
+
+import scipy.io
+from six.moves import xrange
 
 
 def pseudo_batch(x, n):
@@ -45,99 +48,169 @@ def pseudo_batch(x, n):
         yield x
         
         
+
+### 
+tmp_dirname = "/data/epitome/tmp/"
+checkpoint_path = "/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001"
+
+        
+        
 # define the problem
 problem_str="genomics_binding_deepsea_gm12878"
 model_str="tfti_transformer"
 hparams_set_str="tfti_transformer_base"
 hparams_str=""
-checkpoint_path="/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001"
 
 config = get_config(
-    problem="genomics_binding_deepsea_gm12878",
-    model="tfti_transformer",
-    hparams_set="tfti_transformer_base",
-    hparams="",
-    checkpoint_path="/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001",
-
+    problem=problem_str,
+    model=model_str,
+    hparams_set=hparams_set_str,
+    hparams=hparams_str,
+    checkpoint_path=checkpoint_path,
 )
 
 preprocess_batch_fn = get_preprocess_batch_fn(config)
 inference_fn = get_inference_fn(config)
 
 # load in validation generator
-tmp_dir = os.path.expanduser("/data/epitome/tmp/")
+tmp_dir = os.path.expanduser(tmp_dirname)
+
 
 config = tfti_infer.get_config(problem_str, model_str, hparams_set_str, hparams_str, checkpoint_path)
 problem, model, hparams = tfti_infer.get_problem_model_hparams(config)
-generator = problem.generator(tmp_dir, is_training=False)
-generator_list = list(generator)
 
-
-# reload(tfti_infer)
 cell_type_1 = "GM12878"
 cell_type_2 = "H1-hESC"
 
-marks = tfti_infer.get_tfs(problem, cell_type_1, cell_type_2)
-marks_str = '\t'.join(marks)
+# TODO do not hard code
+all_marks = ['GM12878|GABP|None', 'GM12878|Egr-1|None', 'GM12878|NRSF|None',
+       'GM12878|DNase|None', 'GM12878|CTCF|None', 'GM12878|EZH2|None',
+       'GM12878|ATF3|None', 'GM12878|p300|None', 'GM12878|Pol2-4H8|None',
+       'GM12878|SIX5|None', 'GM12878|c-Myc|None', 'GM12878|SRF|None',
+       'GM12878|TAF1|None', 'GM12878|YY1|None', 'GM12878|USF-1|None',
+       'GM12878|CHD1|None', 'GM12878|CHD2|None', 'GM12878|JunD|None',
+       'GM12878|Max|None', 'GM12878|Nrf1|None', 'GM12878|RFX5|None',
+       'GM12878|TBP|None', 'GM12878|ATF2|None', 'GM12878|BCL11A|None',
+       'GM12878|CEBPB|None', 'GM12878|Pol2|None', 'GM12878|Rad21|None',
+       'GM12878|RXRA|None', 'GM12878|SP1|None', 'GM12878|TCF12|None',
+       'GM12878|BRCA1|None', 'GM12878|Mxi1|None', 'GM12878|SIN3A|None',
+       'GM12878|USF2|None', 'GM12878|Znf143|None']
+
+
+all_marks = list(map(lambda x: x.split('|')[1], all_marks))
+
+
+#### Get test data ###
+# Filter out non non-zero examples from test generator
+keep_mask = np.array(tfti_infer.get_keep_mask_for_marks(problem, all_marks, cell_type_1))
+
+filename = os.path.join(tmp_dir, "deepsea_train/test.mat")
+tmp = scipy.io.loadmat(filename)
+targets = tmp["testdata"]
+inputs = tmp["testxdata"]
+
+# mask each row in targets by keep mask
+# flip keep mask
+mask = np.invert(keep_mask.astype(bool))
+# tile to matrix size
+mask_matrix = np.tile(mask, (targets.shape[0], 1))
+
+# create masked targets
+masked_targets = np.ma.array(targets, mask = mask_matrix)
+x = np.sum(masked_targets, axis=1)
+
+# get row indices where masked sums are > 0
+filtered_indices = np.where(x>0)
+
+targets = targets[filtered_indices]
+inputs = inputs[filtered_indices]
+num_records = len(inputs)
+print(f"Using {num_records} samples for Shapley analysis")
+
+sequences = []
+for i in xrange(inputs.shape[0]):
+  x = problem.stringify(inputs[i].transpose([1, 0]))
+  sequences.append(x)
+    
+# only assess 10000 sequences
+inputs = sequences[0:10000]
+targets = targets[0:10000]
+
+###################
+
+
+marks_str = '\t'.join(all_marks)
 
 # get all combs up to 2. This should take about 10 hours.
-depth = 2
-power_set = shapley.power_set(marks, depth=depth)
+depth = 5
+power_set = shapley.power_set(all_marks, depth=depth)
+iters = len(power_set)
+this_iter = 0         
+             
+batch_size = 128
 
-batch_size = 64
-inputs  = np.array(list(map(lambda x: x['inputs'], generator_list)))
-targets = np.array(list(map(lambda x: x['targets'], generator_list)))
 
-f= open(f"shapley_values_64_25_gm12878_depth_{depth}.txt","w+")
-f.write(f"permutation\t{marks_str}\taverageAuROC\n")
+# define output filename
+out_filename = "auc_values_{problem_str}_depth_{depth}_tfCount_{len(all_marks)}.txt"
+
+f= open(out_filename,"w+")
+f.write(f"permutation\t{marks_str}\taverageAuROC\tmaskedAverageAuROC\n")
 
 for set_ in power_set:
-
+    if ((this_iter % 100) == 0):
+        print(f"Computed {this_iter} out of {iters} in the power set")
+             
     start = time.time()
 
-    tf.logging.info("Computing average auROC for set %s" % set_)
     # select marks for this run
-    selected_marks = [m for m in marks if m in set_]
+    selected_marks = [m for m in all_marks if m in set_]
     
     keep_mask = tfti_infer.get_keep_mask_for_marks(problem, selected_marks, cell_type_1)
     
     # instantiate labels and predictions for this set
-    labels_numpy = np.zeros((len(generator_list), len(marks) ))
-    predictions_numpy = np.zeros((len(generator_list), len(marks) ))
+    labels_numpy = np.zeros((num_records, len(all_marks) ))
+    predictions_numpy = np.zeros((num_records, len(all_marks) ))
     
-    for i in range(0, len(generator_list), batch_size):
-        batch_keep_mask = pseudo_batch(keep_mask, batch_size)
+    for i in range(0, num_records, batch_size):
+        min_batch_size = min(batch_size, len(inputs)-i)
+        batch_keep_mask = pseudo_batch(keep_mask, min_batch_size)
         
         batch = preprocess_batch_fn(
-            inputs[i:i+batch_size],
-            targets[i:i+batch_size],
+            inputs[i:i+min_batch_size],
+            targets[i:i+min_batch_size],
             batch_keep_mask
 
         )
         response = inference_fn(batch)
-        labels_numpy[i:i+batch_size] = response['labels'].reshape((batch_size, len(marks)))
-        predictions_numpy[i:i+batch_size] = response['predictions'].reshape((batch_size, len(marks)))
+        labels_numpy[i:i+min_batch_size] = response['labels'].reshape((min_batch_size, len(all_marks)))
+        predictions_numpy[i:i+min_batch_size] = response['predictions'].reshape((min_batch_size, len(all_marks)))
             
-    end = time.time()
-    elapsed = end - start
-    print(f"Completed validation set in {elapsed} seconds")
     
     roc_aucs = []
-    for i in range(len(marks)):
+    masked_roc_aucs = []
+    for i in range(len(all_marks)):
         # Compute micro-average ROC area for all marks
         fpr, tpr, _ = roc_curve(labels_numpy[:,i], predictions_numpy[:,i])
         roc_auc = auc(fpr, tpr)
         roc_aucs.append(roc_auc)
+        if (all_marks[i] not in set_):
+            masked_roc_aucs.append(roc_auc)
         
     roc_auc_str = '\t'.join(str(x) for x in roc_aucs)
     
     # filter out nans to compute auc
     roc_aucs = np.array(roc_aucs)
+    masked_roc_aucs = np.array(masked_roc_aucs)
+    
     average_roc = roc_aucs[np.logical_not(np.isnan(roc_aucs))].mean()
-    tf.logging.info("Computed average auROC: %s" % (average_roc))
+    masked_average_roc = masked_roc_aucs[np.logical_not(np.isnan(masked_roc_aucs))].mean()
+    
+    end = time.time()
+    elapsed = end - start
+    print("Set %s: Computed average auROC: %s in %s seconds" % (set_, average_roc, elapsed))
     
     # save values
-    f.write("%s\t%s\t%s\n" % (selected_marks, roc_auc_str, average_roc))
+    f.write("%s\t%s\t%s\t%s\n" % (selected_marks, roc_auc_str, average_roc, masked_average_roc))
     f.flush()
     
 f.close()

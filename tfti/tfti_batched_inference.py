@@ -166,7 +166,6 @@ def get_inference_fn(config):
     global_step_init = [v.initializer for v in all_variables if "global_step" in v.name]
 
     saver = tf.train.Saver(variables_to_restore)
-
     sess = tf.Session()
     sess.run(global_step_init)
     saver.restore(sess, config.checkpoint_path)
@@ -194,3 +193,20 @@ def get_inference_fn(config):
       return sess.run(fetch, feed)
     
     return inference_fn
+
+def get_tfs(problem, cell_type_1, cell_type_2):
+    items = problem.get_overlapping_indices_for_cell_type(cell_type_1, cell_type_2)[1]
+    return list(map(lambda x: x[1].split('|')[1], items))
+                
+def get_keep_mask_for_marks(problem, selected_marks, cell_type):
+    keep_mask = [0] * problem.num_binary_predictions
+    # load in names
+    namefile = "./deepsea_label_names.txt"
+    names = enumerate(problem.load_names(namefile))
+    # get filtered indices of marks and cell types
+    selected = list(filter(lambda x: (x[1].split('|')[0] == cell_type) & (x[1].split('|')[1] in selected_marks), names))
+                    
+    for i in selected:
+        keep_mask[i[0]]=1
+                    
+    return keep_mask
