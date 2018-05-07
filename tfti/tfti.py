@@ -320,11 +320,6 @@ class BinaryImputationClassLabelModality(BinaryClassLabelModality):
     """
     with tf.variable_scope(self.name):
       res = set_embedding(x, self._vocab_size, self._body_input_depth)
-#     with tf.variable_scope("latent_zeroing", reuse=tf.AUTO_REUSE):
-#       global_step = tf.to_float(tf.train.get_or_create_global_step())
-#       mask = tf.to_float(self._model_hparams.pretrain_steps < global_step)
-#       res = (mask * tf.to_float(res)
-#                  + (1.0 - mask) * self.UNK_ID)
       return tf.expand_dims(res, 2)  # [batch_size, nlabels, 1, hidden_size]
 
   def loss(self, logits, targets):
@@ -417,7 +412,8 @@ class DeepseaProblem(problem.Problem):
     """
     dataset = super().preprocess(dataset, mode, hparams)
     if mode == tf.estimator.ModeKeys.EVAL:
-      dataset = dataset.repeat(count=10)
+      # Use --eval_steps to control how long we evaluate.
+      dataset = dataset.repeat(count=99999)
     if hparams.get("filter_negatives"):
       dataset = dataset.filter(lambda ex: tf.reduce_any(tf.equal(ex["targets"], tf.constant(1, dtype=tf.int64))))
     return dataset
@@ -945,18 +941,11 @@ class TftiMulticellProblem(TftiDeepseaProblem):
     for cell_type in self.cell_types:
       # Do not put test in train set!
       if cell_type != self.test_cell_type:
-        # Argsort indices to preserve ordering.
-        argsort_indices = np.argsort(gather_indices[cell_type])
-        gather_indices_sorted = np.sort(gather_indices[cell_type])
 
-        # Each example is based off of base_example, using different indices.
         example = base_example.copy()
 
         for key in ["targets", "latents", "metrics_weights"]:
-          # Keep targets and latents corresponding to cell_type.
-          example_key = tf.gather(example[key], gather_indices_sorted)
-          # Ensure sure tensors are sorted by alphabetical TFs.
-          example[key] = tf.gather(example_key, argsort_indices)
+          example[key] = tf.gather(example[key], gather_indices[cell_type])
 
         # Each example is added to a new dataset, and the datasets are appended.
         new_data = tf.data.Dataset.from_tensors(example)
@@ -967,6 +956,30 @@ class TftiMulticellProblem(TftiDeepseaProblem):
 
     return dataset
 
+
+@registry.register_problem("genomics_binding_deepsea_multicell_eval")
+class TftiMulticellEvalProblem(TftiMulticellProblem):
+  """Evaluates TftiMulticellProblem on the held out cell type."""
+
+  def preprocess_example(self, example, mode, hparams):
+    """Makes one example for each cell type, including only intersecting marks.
+
+    See base class for method signature.
+    """
+
+    example = TftiDeepseaProblem.preprocess_example(self, example, mode, hparams)
+
+    gather_indices, _ = self.get_overlapping_indices_multicell()
+
+    # Only eval on test.
+    cell_type = self.test_cell_type
+
+    for key in ["targets", "latents", "metrics_weights"]:
+      example[key] = tf.gather(example[key], gather_indices[cell_type])
+
+    dataset = tf.data.Dataset.from_tensors(example)
+
+    return dataset
 
 ################################################################################
 ################################### MODELS #####################################
@@ -1062,7 +1075,6 @@ def tfti_transformer_base():
   hparams.add_hparam("multigpu", False)
   hparams.add_hparam("pos_weight", 25)
   hparams.add_hparam("latent_keep_prob", 0.5)
-  # hparams.add_hparam("pretrain_steps", 0)
   hparams.add_hparam("filter_negatives", False)
   hparams.add_hparam("scaled_loss", False)
   return hparams
