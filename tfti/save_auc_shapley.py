@@ -18,7 +18,6 @@ from sklearn.metrics import roc_curve, auc
 
 sys.path.append("../tfti")
 import tfti
-import tfti_infer
 
 from itertools import combinations
 import math
@@ -76,8 +75,8 @@ inference_fn = get_inference_fn(config)
 tmp_dir = os.path.expanduser(tmp_dirname)
 
 
-config = tfti_infer.get_config(problem_str, model_str, hparams_set_str, hparams_str, checkpoint_path)
-problem, model, hparams = tfti_infer.get_problem_model_hparams(config)
+config = get_config(problem_str, model_str, hparams_set_str, hparams_str, checkpoint_path)
+problem, model, hparams = get_problem_model_hparams(config)
 
 cell_type_1 = "GM12878"
 cell_type_2 = "H1-hESC"
@@ -100,9 +99,9 @@ all_marks = ['GM12878|GABP|None', 'GM12878|Egr-1|None', 'GM12878|NRSF|None',
 all_marks = list(map(lambda x: x.split('|')[1], all_marks))
 
 
-#### Get test data ###
+###### Get test data #####
 # Filter out non non-zero examples from test generator
-keep_mask = np.array(tfti_infer.get_keep_mask_for_marks(problem, all_marks, cell_type_1))
+keep_mask = np.array(get_keep_mask_for_marks(problem, all_marks, cell_type_1))
 
 filename = os.path.join(tmp_dir, "deepsea_train/test.mat")
 tmp = scipy.io.loadmat(filename)
@@ -129,14 +128,13 @@ print(f"Using {num_records} samples for Shapley analysis")
 
 sequences = []
 for i in xrange(inputs.shape[0]):
-  x = problem.stringify(inputs[i].transpose([1, 0]))
-  sequences.append(x)
+  sequences.append(problem.stringify(inputs[i].transpose([1, 0])))
     
 # only assess 10000 sequences
 inputs = sequences[0:10000]
 targets = targets[0:10000]
 
-###################
+######################
 
 
 marks_str = '\t'.join(all_marks)
@@ -149,9 +147,8 @@ this_iter = 0
              
 batch_size = 128
 
-
 # define output filename
-out_filename = "auc_values_{problem_str}_depth_{depth}_tfCount_{len(all_marks)}.txt"
+out_filename = "TTTauc_values_{problem_str}_depth_{depth}_tfCount_{len(all_marks)}.txt"
 
 f= open(out_filename,"w+")
 f.write(f"permutation\t{marks_str}\taverageAuROC\tmaskedAverageAuROC\n")
@@ -165,7 +162,7 @@ for set_ in power_set:
     # select marks for this run
     selected_marks = [m for m in all_marks if m in set_]
     
-    keep_mask = tfti_infer.get_keep_mask_for_marks(problem, selected_marks, cell_type_1)
+    keep_mask = get_keep_mask_for_marks(problem, selected_marks, cell_type_1)
     
     # instantiate labels and predictions for this set
     labels_numpy = np.zeros((num_records, len(all_marks) ))
@@ -173,18 +170,19 @@ for set_ in power_set:
     
     for i in range(0, num_records, batch_size):
         min_batch_size = min(batch_size, len(inputs)-i)
-        batch_keep_mask = pseudo_batch(keep_mask, min_batch_size)
-        
-        batch = preprocess_batch_fn(
-            inputs[i:i+min_batch_size],
-            targets[i:i+min_batch_size],
-            batch_keep_mask
+        if (min_batch_size > 0):
+            batch_keep_mask = pseudo_batch(keep_mask, min_batch_size)
+            print(len(list(pseudo_batch(keep_mask, min_batch_size))))
 
-        )
-        response = inference_fn(batch)
-        labels_numpy[i:i+min_batch_size] = response['labels'].reshape((min_batch_size, len(all_marks)))
-        predictions_numpy[i:i+min_batch_size] = response['predictions'].reshape((min_batch_size, len(all_marks)))
-            
+            batch = preprocess_batch_fn(
+                inputs[i:i+min_batch_size],
+                targets[i:i+min_batch_size],
+                batch_keep_mask
+            )
+            response = inference_fn(batch)
+            labels_numpy[i:i+min_batch_size] = response['labels'].reshape((min_batch_size, len(all_marks)))
+            predictions_numpy[i:i+min_batch_size] = response['predictions'].reshape((min_batch_size, len(all_marks)))
+
     
     roc_aucs = []
     masked_roc_aucs = []
