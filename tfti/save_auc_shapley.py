@@ -14,7 +14,7 @@ import tensorflow as tf
 
 # for metrics
 from sklearn import metrics
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_auc_score
 
 sys.path.append("../tfti")
 import tfti
@@ -103,10 +103,10 @@ all_marks = list(map(lambda x: x.split('|')[1], all_marks))
 # Filter out non non-zero examples from test generator
 keep_mask = np.array(get_keep_mask_for_marks(problem, all_marks, cell_type_1))
 
-filename = os.path.join(tmp_dir, "deepsea_train/test.mat")
+filename = os.path.join(tmp_dir, "deepsea_train/valid.mat")
 tmp = scipy.io.loadmat(filename)
-targets = tmp["testdata"]
-inputs = tmp["testxdata"]
+targets = tmp["validdata"]
+inputs = tmp["validxdata"]
 
 # mask each row in targets by keep mask
 # flip keep mask
@@ -115,14 +115,14 @@ mask = np.invert(keep_mask.astype(bool))
 mask_matrix = np.tile(mask, (targets.shape[0], 1))
 
 # create masked targets
-masked_targets = np.ma.array(targets, mask = mask_matrix)
-x = np.sum(masked_targets, axis=1)
+# masked_targets = np.ma.array(targets, mask = mask_matrix)
+# x = np.sum(masked_targets, axis=1)
 
 # get row indices where masked sums are > 0
-filtered_indices = np.where(x>0)
+# filtered_indices = np.where(x>0)
 
-targets = targets[filtered_indices]
-inputs = inputs[filtered_indices]
+# targets = targets[filtered_indices]
+# inputs = inputs[filtered_indices]
 num_records = len(inputs)
 print(f"Using {num_records} samples for Shapley analysis")
 
@@ -148,7 +148,7 @@ this_iter = 0
 batch_size = 128
 
 # define output filename
-out_filename = "TTTauc_values_{problem_str}_depth_{depth}_tfCount_{len(all_marks)}.txt"
+out_filename = "TESTESTauc_values_{problem_str}_depth_{depth}_tfCount_{len(all_marks)}.txt"
 
 f= open(out_filename,"w+")
 f.write(f"permutation\t{marks_str}\taverageAuROC\tmaskedAverageAuROC\n")
@@ -172,7 +172,6 @@ for set_ in power_set:
         min_batch_size = min(batch_size, len(inputs)-i)
         if (min_batch_size > 0):
             batch_keep_mask = pseudo_batch(keep_mask, min_batch_size)
-            print(len(list(pseudo_batch(keep_mask, min_batch_size))))
 
             batch = preprocess_batch_fn(
                 inputs[i:i+min_batch_size],
@@ -188,8 +187,10 @@ for set_ in power_set:
     masked_roc_aucs = []
     for i in range(len(all_marks)):
         # Compute micro-average ROC area for all marks
-        fpr, tpr, _ = roc_curve(labels_numpy[:,i], predictions_numpy[:,i])
-        roc_auc = auc(fpr, tpr)
+        try:
+            roc_auc = roc_auc_score(labels_numpy[:,i],predictions_numpy[:,i])
+        except ValueError:
+            roc_auc = np.NaN
         roc_aucs.append(roc_auc)
         if (all_marks[i] not in set_):
             masked_roc_aucs.append(roc_auc)
@@ -198,6 +199,8 @@ for set_ in power_set:
     
     # filter out nans to compute auc
     roc_aucs = np.array(roc_aucs)
+    for i in list(zip(all_marks, roc_aucs)):
+        print(i)
     masked_roc_aucs = np.array(masked_roc_aucs)
     
     average_roc = roc_aucs[np.logical_not(np.isnan(roc_aucs))].mean()
