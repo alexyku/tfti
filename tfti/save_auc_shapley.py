@@ -2,14 +2,6 @@ import os
 import sys
 
 # Dependency imports
-
-
-# TODO params
-# valid or test
-# sample or dont
-# directories
-# problem
-
 from tensor2tensor.bin import t2t_trainer
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.utils import decoding
@@ -55,33 +47,100 @@ def pseudo_batch(x, n):
     """Yields the value x n-times."""
     for _ in range(n):
         yield x
+        
+        
+def filter_negatives(inputs, targets, keep_mask):
+    # mask each row in targets by keep mask
+    # flip keep mask
+    mask = np.invert(keep_mask.astype(bool))
+    # tile to matrix size
+    mask_matrix = np.tile(mask, (targets.shape[0], 1))
+
+    # create masked targets
+    masked_targets = np.ma.array(targets, mask = mask_matrix)
+    x = np.sum(masked_targets, axis=1)
+
+    # get row indices where masked sums are > 0
+    filtered_indices = np.where(x>0)
+
+    targets = targets[filtered_indices]
+    inputs = inputs[filtered_indices]
+    
+    num_records = len(inputs)
+    print(f"Using {num_records} samples for Shapley analysis")
+
+    sequences = []
+    for i in xrange(inputs.shape[0]):
+      sequences.append(problem.stringify(inputs[i].transpose([1, 0])))
+
+    # only assess 10000 sequences
+    # inputs = sequences[0:10000]
+    # targets = targets[0:10000]
+    
 
 ############## End Functions ###############
 
+
+
+
+########## Command line arguments ##########
 # get command line arguments
 parser = argparse.ArgumentParser(description='Arguments for getting average AUC values on a Tensor2Tensor problem.')
 
-parser.add_argument('model_checkpoint_path', metavar='model checkpoint path', type=str, nargs='+',
-                   help='Path to Tensor2Tensor model checkpoint')
+parser.add_argument('model_checkpoint_path', metavar='model checkpoint path', type=str, nargs=1,
+                    default="/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001",
+                    help='Path to Tensor2Tensor model checkpoint')
+
+parser.add_argument('data_dir', metavar='directory containing mat files', type=str, nargs=1,
+                    default="/data/epitome/tmp/deepsea_train"
+                   help='Directory containing DeepSEA .mat files (valid.mat and test.mat)')
+
+parser.add_argument('problem', metavar='t2t problem', type=str, nargs=1,
+                    default="genomics_binding_deepsea_gm12878"
+                   help='t2t problem string (default genomics_binding_deepsea_gm12878)')
+
+parser.add_argument('model', metavar='t2t model', type=str, nargs=1,
+                    default="tfti_transformer"
+                   help='t2t model string (default tfti_transformer)')
+
+parser.add_argument('hparams_set', metavar='t2t hparams set', type=str, nargs=1,
+                    default="tfti_transformer_base"
+                   help='t2t hparams set name(default tfti_transformer_base)')
+
+parser.add_argument('hparams', metavar='t2t hparams', type=str, nargs=1,
+                    default=""
+                   help='t2t hparams string (default is \'\' )')
+
+parser.add_argument('validation', metavar='validation=True, test=False', type=bool, nargs=1,
+                    default=True
+                   help='run on validation or test. validation=True, test=False (default is True (validation))')
+
+parser.add_argument('sample', metavar='amount of points to sample', type=float, nargs=1,
+                    default=1.0
+                   help='amount of points to sample. Default does not sample.')
 
 
 args = parser.parse_args()
 
-        
 
-        
 
-### files
-tmp_dirname = "/data/epitome/tmp/"
-checkpoint_path = "/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001"
 
-        
-        
 # define the problem
-problem_str="genomics_binding_deepsea_gm12878"
-model_str="tfti_transformer"
-hparams_set_str="tfti_transformer_base"
-hparams_str=""
+problem_str=args.problem
+model_str=args.model
+hparams_set_str=args.hparams_set
+hparams_str=args.hparams
+
+# define file locations
+tmp_dirname = args.data_dir
+checkpoint_path = args.model_checkpoint_path
+
+# extra params
+is_validation = args.validation
+is_sampling = args.sample
+
+######## End Command line arguments #########
+
 
 config = get_config(
     problem=problem_str,
@@ -94,9 +153,8 @@ config = get_config(
 preprocess_batch_fn = get_preprocess_batch_fn(config)
 inference_fn = get_inference_fn(config)
 
-# load in validation generator
+# load in generator
 tmp_dir = os.path.expanduser(tmp_dirname)
-
 
 config = get_config(problem_str, model_str, hparams_set_str, hparams_str, checkpoint_path)
 problem, model, hparams = get_problem_model_hparams(config)
@@ -122,14 +180,23 @@ all_marks = ['GM12878|GABP|None', 'GM12878|Egr-1|None', 'GM12878|NRSF|None',
 all_marks = list(map(lambda x: x.split('|')[1], all_marks))
 
 
-###### Get test data #####
+########## Load data data #########
 # Filter out non non-zero examples from test generator
 keep_mask = np.array(get_keep_mask_for_marks(problem, all_marks, cell_type_1))
 
-filename = os.path.join(tmp_dir, "deepsea_train/test.mat")
-tmp = scipy.io.loadmat(filename)
-targets = tmp["testdata"]
-inputs = tmp["testxdata"]
+if (is_valdation):
+    filename = os.path.join(tmp_dir, "valid.mat")
+    tmp = scipy.io.loadmat(filename)
+    targets = tmp["validdata"]
+    inputs = tmp["validxdata"]
+
+else:
+    filename = os.path.join(tmp_dir, "test.mat")
+    tmp = scipy.io.loadmat(filename)
+    targets = tmp["testdata"]
+    inputs = tmp["testxdata"]
+    
+    
 
 # mask each row in targets by keep mask
 # flip keep mask
