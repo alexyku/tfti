@@ -3,6 +3,13 @@ import sys
 
 # Dependency imports
 
+
+# TODO params
+# valid or test
+# sample or dont
+# directories
+# problem
+
 from tensor2tensor.bin import t2t_trainer
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.utils import decoding
@@ -39,16 +46,32 @@ import sys
 
 import scipy.io
 from six.moves import xrange
+import argparse
 
+
+############## Functions ###################
 
 def pseudo_batch(x, n):
     """Yields the value x n-times."""
     for _ in range(n):
         yield x
-        
+
+############## End Functions ###############
+
+# get command line arguments
+parser = argparse.ArgumentParser(description='Arguments for getting average AUC values on a Tensor2Tensor problem.')
+
+parser.add_argument('model_checkpoint_path', metavar='model checkpoint path', type=str, nargs='+',
+                   help='Path to Tensor2Tensor model checkpoint')
+
+
+args = parser.parse_args()
+
         
 
-### 
+        
+
+### files
 tmp_dirname = "/data/epitome/tmp/"
 checkpoint_path = "/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001"
 
@@ -103,10 +126,10 @@ all_marks = list(map(lambda x: x.split('|')[1], all_marks))
 # Filter out non non-zero examples from test generator
 keep_mask = np.array(get_keep_mask_for_marks(problem, all_marks, cell_type_1))
 
-filename = os.path.join(tmp_dir, "deepsea_train/valid.mat")
+filename = os.path.join(tmp_dir, "deepsea_train/test.mat")
 tmp = scipy.io.loadmat(filename)
-targets = tmp["validdata"]
-inputs = tmp["validxdata"]
+targets = tmp["testdata"]
+inputs = tmp["testxdata"]
 
 # mask each row in targets by keep mask
 # flip keep mask
@@ -131,8 +154,8 @@ for i in xrange(inputs.shape[0]):
   sequences.append(problem.stringify(inputs[i].transpose([1, 0])))
     
 # only assess 10000 sequences
-inputs = sequences[0:10000]
-targets = targets[0:10000]
+# inputs = sequences[0:10000]
+# targets = targets[0:10000]
 
 ######################
 
