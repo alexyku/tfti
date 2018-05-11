@@ -9,7 +9,7 @@ from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
 
-import tensorflow as tf
+# import tensorflow as tf
 
 # for metrics
 from sklearn import metrics
@@ -28,7 +28,7 @@ import numpy.ma as ma
 import random
 
 sys.path.append("../tfti")
-from tfti_batched_inference import *
+from tfti_batched_inference_multicell import *
 
 sys.path.append("../shapley")
 import shapley
@@ -49,7 +49,7 @@ def pseudo_batch(x, n):
         yield x
         
         
-def filter_negatives(inputs, targets, keep_mask):
+def filter_negatives(inputs, targets, keep_mask, n=10000):
     # mask each row in targets by keep mask
     # flip keep mask
     mask = np.invert(keep_mask.astype(bool))
@@ -69,13 +69,11 @@ def filter_negatives(inputs, targets, keep_mask):
     num_records = len(inputs)
     print(f"Using {num_records} samples for Shapley analysis")
 
-    sequences = []
-    for i in xrange(inputs.shape[0]):
-      sequences.append(problem.stringify(inputs[i].transpose([1, 0])))
-
-    # only assess 10000 sequences
-    # inputs = sequences[0:10000]
-    # targets = targets[0:10000]
+    # only assess n sequences
+    inputs = inputs[0:n]
+    targets = targets[0:n]
+    
+    return inputs, targets
     
 
 ############## End Functions ###############
@@ -87,43 +85,42 @@ def filter_negatives(inputs, targets, keep_mask):
 # get command line arguments
 parser = argparse.ArgumentParser(description='Arguments for getting average AUC values on a Tensor2Tensor problem.')
 
-parser.add_argument('model_checkpoint_path', metavar='model checkpoint path', type=str, nargs=1,
-                    default="/data/akmorrow/tfti/t2t_train/6-64-25/model.ckpt-210001",
+parser.add_argument('output_file', metavar='output_file', type=str, nargs=1,
+                   help='Output files to save values to.')
+
+parser.add_argument('--model_checkpoint_path', metavar='model_checkpoint_path', type=str, nargs=1,
+                    default="/data/akmorrow/tfti/t2t_train/6-128-25m/model.ckpt-164001",
                     help='Path to Tensor2Tensor model checkpoint')
 
-parser.add_argument('data_dir', metavar='directory containing mat files', type=str, nargs=1,
-                    default="/data/epitome/tmp/deepsea_train"
+parser.add_argument('--data_dir', metavar='data_dir', type=str, nargs=1,
+                    default="/data/epitome/tmp/deepsea_train",
                    help='Directory containing DeepSEA .mat files (valid.mat and test.mat)')
 
-parser.add_argument('problem', metavar='t2t problem', type=str, nargs=1,
-                    default="genomics_binding_deepsea_gm12878"
-                   help='t2t problem string (default genomics_binding_deepsea_gm12878)')
+parser.add_argument('--problem', metavar='problem', type=str, nargs=1,
+                    default="genomics_binding_deepsea_multicell",
+                   help='t2t problem string (default genomics_binding_deepsea_multicell)')
 
-parser.add_argument('model', metavar='t2t model', type=str, nargs=1,
-                    default="tfti_transformer"
+parser.add_argument('--model', metavar='model', type=str, nargs=1,
+                    default="tfti_transformer",
                    help='t2t model string (default tfti_transformer)')
 
-parser.add_argument('hparams_set', metavar='t2t hparams set', type=str, nargs=1,
-                    default="tfti_transformer_base"
+parser.add_argument('--hparams_set', metavar='hparams_set', type=str, nargs=1,
+                    default="tfti_transformer_base",
                    help='t2t hparams set name(default tfti_transformer_base)')
 
-parser.add_argument('hparams', metavar='t2t hparams', type=str, nargs=1,
-                    default=""
+parser.add_argument('--hparams', metavar='hparams', type=str, nargs=1,
+                    default="",
                    help='t2t hparams string (default is \'\' )')
 
-parser.add_argument('validation', metavar='validation=True, test=False', type=bool, nargs=1,
-                    default=True
-                   help='run on validation or test. validation=True, test=False (default is True (validation))')
+parser.add_argument('--is_validation', dest='is_validation', action='store_true')
+parser.add_argument('--is_test', dest='is_validation', action='store_false')
 
-parser.add_argument('sample', metavar='amount of points to sample', type=float, nargs=1,
-                    default=1.0
-                   help='amount of points to sample. Default does not sample.')
+parser.add_argument('--subset_records', dest='subset_records',
+                    action='store_true')
+
 
 
 args = parser.parse_args()
-
-
-
 
 # define the problem
 problem_str=args.problem
@@ -135,9 +132,10 @@ hparams_str=args.hparams
 tmp_dirname = args.data_dir
 checkpoint_path = args.model_checkpoint_path
 
-# extra params
-is_validation = args.validation
-is_sampling = args.sample
+# define output filename
+out_filename = args.output_file[0]
+is_validation = args.is_validation
+subset_records = args.subset_records
 
 ######## End Command line arguments #########
 
@@ -159,25 +157,11 @@ tmp_dir = os.path.expanduser(tmp_dirname)
 config = get_config(problem_str, model_str, hparams_set_str, hparams_str, checkpoint_path)
 problem, model, hparams = get_problem_model_hparams(config)
 
-cell_type_1 = "GM12878"
-cell_type_2 = "H1-hESC"
 
 # TODO do not hard code
-all_marks = ['GM12878|GABP|None', 'GM12878|Egr-1|None', 'GM12878|NRSF|None',
-       'GM12878|DNase|None', 'GM12878|CTCF|None', 'GM12878|EZH2|None',
-       'GM12878|ATF3|None', 'GM12878|p300|None', 'GM12878|Pol2-4H8|None',
-       'GM12878|SIX5|None', 'GM12878|c-Myc|None', 'GM12878|SRF|None',
-       'GM12878|TAF1|None', 'GM12878|YY1|None', 'GM12878|USF-1|None',
-       'GM12878|CHD1|None', 'GM12878|CHD2|None', 'GM12878|JunD|None',
-       'GM12878|Max|None', 'GM12878|Nrf1|None', 'GM12878|RFX5|None',
-       'GM12878|TBP|None', 'GM12878|ATF2|None', 'GM12878|BCL11A|None',
-       'GM12878|CEBPB|None', 'GM12878|Pol2|None', 'GM12878|Rad21|None',
-       'GM12878|RXRA|None', 'GM12878|SP1|None', 'GM12878|TCF12|None',
-       'GM12878|BRCA1|None', 'GM12878|Mxi1|None', 'GM12878|SIN3A|None',
-       'GM12878|USF2|None', 'GM12878|Znf143|None']
-
-
-all_marks = list(map(lambda x: x.split('|')[1], all_marks))
+all_marks = sorted(['CEBPB', 'CHD2', 'CTCF', 'DNase', 'EZH2', 'GABP', 'JunD', 'Max', 'Mxi1', 
+                  'NRSF', 'Nrf1', 'Pol2', 'RFX5', 'Rad21', 'TAF1', 'TBP', 'USF2', 'c-Myc', 
+                  'p300'])
 
 
 ########## Load data data #########
@@ -197,48 +181,30 @@ else:
     inputs = tmp["testxdata"]
     
     
-
-# mask each row in targets by keep mask
-# flip keep mask
-mask = np.invert(keep_mask.astype(bool))
-# tile to matrix size
-mask_matrix = np.tile(mask, (targets.shape[0], 1))
-
-# create masked targets
-# masked_targets = np.ma.array(targets, mask = mask_matrix)
-# x = np.sum(masked_targets, axis=1)
-
-# get row indices where masked sums are > 0
-# filtered_indices = np.where(x>0)
-
-# targets = targets[filtered_indices]
-# inputs = inputs[filtered_indices]
-num_records = len(inputs)
-print(f"Using {num_records} samples for Shapley analysis")
-
+if (subset_records):
+    inputs, targets = filter_negatives(inputs, targets, keep_mask, n=10000)
+    
 sequences = []
 for i in xrange(inputs.shape[0]):
   sequences.append(problem.stringify(inputs[i].transpose([1, 0])))
-    
-# only assess 10000 sequences
-# inputs = sequences[0:10000]
-# targets = targets[0:10000]
+inputs = sequences
 
 ######################
-
 
 marks_str = '\t'.join(all_marks)
 
 # get all combs up to 2. This should take about 10 hours.
 depth = 5
 power_set = shapley.power_set(all_marks, depth=depth)
+# print(power_set)
+# print(type(power_set))
+# raise
+
+
 iters = len(power_set)
 this_iter = 0         
              
 batch_size = 128
-
-# define output filename
-out_filename = "TESTESTauc_values_{problem_str}_depth_{depth}_tfCount_{len(all_marks)}.txt"
 
 f= open(out_filename,"w+")
 f.write(f"permutation\t{marks_str}\taverageAuROC\tmaskedAverageAuROC\n")
