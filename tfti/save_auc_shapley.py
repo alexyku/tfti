@@ -109,8 +109,12 @@ parser.add_argument('--hparams_set', metavar='hparams_set', type=str, nargs=1,
                    help='t2t hparams set name(default tfti_transformer_base)')
 
 parser.add_argument('--hparams', metavar='hparams', type=str, nargs=1,
-                    default="",
+                    default="multigpu=True",
                    help='t2t hparams string (default is \'\' )')
+
+parser.add_argument('--hours', metavar='hours', type=int, nargs=1,
+                    default=10,
+                   help='Hours to run program for. The longer the program runs, the more samples it will take for calculating AUC')
 
 parser.add_argument('--is_validation', dest='is_validation', action='store_true')
 parser.add_argument('--is_test', dest='is_validation', action='store_false')
@@ -148,7 +152,9 @@ config = get_config(
     checkpoint_path=checkpoint_path,
 )
 
-preprocess_batch_fn = get_preprocess_batch_fn(config)
+cell_type="GM12878"
+
+preprocess_batch_fn = get_preprocess_batch_fn(config, cell_type)
 inference_fn = get_inference_fn(config)
 
 # load in generator
@@ -166,9 +172,9 @@ all_marks = sorted(['CEBPB', 'CHD2', 'CTCF', 'DNase', 'EZH2', 'GABP', 'JunD', 'M
 
 ########## Load data data #########
 # Filter out non non-zero examples from test generator
-keep_mask = np.array(get_keep_mask_for_marks(problem, all_marks, cell_type_1))
+keep_mask = np.array(get_keep_mask_for_marks(problem, all_marks, cell_type))
 
-if (is_valdation):
+if (is_validation):
     filename = os.path.join(tmp_dir, "valid.mat")
     tmp = scipy.io.loadmat(filename)
     targets = tmp["validdata"]
@@ -188,18 +194,23 @@ sequences = []
 for i in xrange(inputs.shape[0]):
   sequences.append(problem.stringify(inputs[i].transpose([1, 0])))
 inputs = sequences
+num_records = len(inputs)
 
 ######################
 
 marks_str = '\t'.join(all_marks)
 
 # get all combs up to 2. This should take about 10 hours.
-depth = 5
-power_set = shapley.power_set(all_marks, depth=depth)
-# print(power_set)
-# print(type(power_set))
-# raise
+depth = 6
 
+# Calculate number of iterations to run
+iter_time = 1 # minute
+num_iters = int(args.hours * (60/iter_time))
+# Subset power_set by number of iterations. Do not sample single and pairwise iterations.
+first_n = len(shapley.power_set(all_marks, 2)) # make sure to compute all single and pair wise
+power_set = shapley.power_set(all_marks, depth=depth)
+indices = random.sample(range(len(power_set[first_n:])), num_iters-first_n)
+power_set = power_set[0:first_n] + [power_set[first_n:][i] for i in sorted(indices)]
 
 iters = len(power_set)
 this_iter = 0         
@@ -218,7 +229,7 @@ for set_ in power_set:
     # select marks for this run
     selected_marks = [m for m in all_marks if m in set_]
     
-    keep_mask = get_keep_mask_for_marks(problem, selected_marks, cell_type_1)
+    keep_mask = get_keep_mask_for_marks(problem, selected_marks, cell_type)
     
     # instantiate labels and predictions for this set
     labels_numpy = np.zeros((num_records, len(all_marks) ))
@@ -255,8 +266,6 @@ for set_ in power_set:
     
     # filter out nans to compute auc
     roc_aucs = np.array(roc_aucs)
-    for i in list(zip(all_marks, roc_aucs)):
-        print(i)
     masked_roc_aucs = np.array(masked_roc_aucs)
     
     average_roc = roc_aucs[np.logical_not(np.isnan(roc_aucs))].mean()

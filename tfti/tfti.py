@@ -928,15 +928,21 @@ class TftiMulticellProblem(TftiDeepseaProblem):
 
     return cell_indices, valid_tfs
 
-  def preprocess_example(self, example, mode, hparams):
+  def preprocess_example(self, example, mode, hparams, cell_type = None):
     """Makes one example for each cell type, including only intersecting marks.
 
     See base class for method signature.
     """
-
     base_example = super().preprocess_example(example, mode, hparams)
-
     gather_indices, _ = self.get_overlapping_indices_multicell()
+    
+    # just 1 datapoint for 1 celltype
+    if (cell_type):
+        tf.logging.info(example)
+        print(base_example)
+        for key in ["targets", "latents", "metrics_weights"]:
+          base_example[key] = tf.gather(base_example[key], gather_indices[cell_type])
+        return base_example
 
     dataset = None
 
