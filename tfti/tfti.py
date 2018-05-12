@@ -840,21 +840,22 @@ class TftiMulticellProblem(TftiDeepseaProblem):
   def test_cell_type(self):
     return self.cell_types[-1]
 
-  def targets_gather_indices(self):
+  def targets_gather_indices(self, cell_type):
     """Returns indices to gather `targets`, `latents` and `metrics_weights`.
 
     Returns:
       A list of indices between [0, self.num_binary_predictions).
     """
-    return self.get_overlapping_indices_multicell()[0]
+    return self.get_overlapping_indices_multicell()[0][cell_type]
 
   def get_overlapping_indices_multicell(self):
     """Gets target indices for transcription factors for the intersection
-    of call cell types.
+    of all cell types.
 
     Returns:
-      Dict of lists of indices in each cell of the intersection of all cells.
+      Tuple(0) Dict of lists of indices in each cell of the intersection of all cells.
       These indices are listed in alphabetical order for consistency.
+      Tuple(1) List of Marks
     """
 
     dir_path = os.path.dirname(os.path.realpath(__file__))
