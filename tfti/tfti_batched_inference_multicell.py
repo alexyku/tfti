@@ -42,7 +42,7 @@ def get_problem_model_hparams(config):
   return (problem, model, hparams)
 
 
-def get_preprocess_example_fn(config):
+def get_preprocess_example_fn(config, cell_type):
   """Returns a function that preprocesses a single example."""
   problem, model, hparams = get_problem_model_hparams(config)
   encoders = problem.get_feature_encoders(config.data_dir)
@@ -57,7 +57,9 @@ def get_preprocess_example_fn(config):
     keep_mask = tf.reshape(keep_mask_ph, shape=[problem.num_binary_predictions])
     
     features = {"inputs": inputs, "targets": targets, "latent_keep_mask": keep_mask}
-    features = problem.preprocess_example(features, tf.estimator.ModeKeys.EVAL, hparams)
+    features = problem.preprocess_example(features, tf.estimator.ModeKeys.EVAL, hparams, cell_type)
+    
+    # this returns a dataset generator
     
     sess = tf.Session()
     
@@ -92,9 +94,9 @@ def get_preprocess_example_fn(config):
     return preprocess_example_fn
 
 
-def get_preprocess_batch_fn(config):
+def get_preprocess_batch_fn(config, cell_type):
   """Returns a function that preprocesses a batch of examples."""
-  preprocess_example_fn = get_preprocess_example_fn(config)
+  preprocess_example_fn = get_preprocess_example_fn(config, cell_type)
   
   def preprocess_batch_fn(inputs_iter, targets_iter, keep_mask_iter):
     """Preprocesses a batch of examples to the problem specifications.
@@ -140,7 +142,7 @@ def get_inference_fn(config):
     assert isinstance(problem, tfti.TftiDeepseaProblem)
     
     preprocessed_inputs_length = int(np.ceil(problem.input_sequence_length / problem.chunk_size))
-    preprocessed_targets_length = len(problem.targets_gather_indices())
+    preprocessed_targets_length = len(problem.get_overlapping_indices_multicell()[1])
     
     # batched
     inputs_ph = tf.placeholder(dtype=tf.int32, shape=[None, preprocessed_inputs_length, 1, 1])
@@ -160,10 +162,10 @@ def get_inference_fn(config):
     labels = features["targets"]
     predictions = tf.nn.sigmoid(logits)
     
-    # Restore variables.
     all_variables = tf.contrib.slim.get_variables_to_restore()
+
     variables_to_restore = [v for v in all_variables if "global_step" not in v.name]
-    global_step_init = [v.initializer for v in all_variables if "global_step" in v.name]
+    global_step_init = [v.initializer for v in all_variables  if "global_step" in v.name]
 
     saver = tf.train.Saver(variables_to_restore)
     sess = tf.Session()
@@ -195,7 +197,7 @@ def get_inference_fn(config):
     return inference_fn
 
 def get_tfs(problem, cell_type_1, cell_type_2):
-    items = problem.get_overlapping_indices_for_cell_type(cell_type_1, cell_type_2)[1]
+    items = problem.get_overlapping_indices_multicell()[1]
     return list(map(lambda x: x[1].split('|')[1], items))
                 
 def get_keep_mask_for_marks(problem, selected_marks, cell_type):

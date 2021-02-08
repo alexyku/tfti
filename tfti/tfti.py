@@ -480,6 +480,7 @@ class DeepseaProblem(problem.Problem):
       assert len(targets) == self.num_binary_predictions
       yield {"index": [i], "inputs": list(map(ord, inputs)),
              "targets": list(map(int, targets))}
+
   
   def maybe_download_and_unzip(self, tmp_dir):
     """Downloads deepsea data if it doesn"t already exist.
@@ -625,7 +626,7 @@ class TftiDeepseaProblem(DeepseaProblem):
     return tf.to_int32(keep_mask * tf.to_float(targets)
                        + (1.0 - keep_mask) * self.unk_id), keep_mask
 
-  def preprocess_example(self, example, mode, hparams):
+  def preprocess_example(self, example, mode, hparams, cell_type_1=None, cell_type_2=None):
     """See base class."""
     example = super().preprocess_example(example, mode, hparams)
     
@@ -720,7 +721,7 @@ class TftiDeepseaProblem(DeepseaProblem):
 
     # These are the indices we are using for the cell type 1 model.
     cell_type_1_indices = list(map(lambda x: x[0], cell_type_1_items))
-    return cell_type_1_indices
+    return cell_type_1_indices, cell_type_1_items
 
 
 @registry.register_problem("genomics_binding_deepsea_tf")
@@ -770,10 +771,10 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     Returns:
       A list of indices between [0, self.num_binary_predictions).
     """
-    return self.get_overlapping_indices_for_cell_type("GM12878", "H1-hESC")
+    return self.get_overlapping_indices_for_cell_type("GM12878", "H1-hESC")[0]
 
   def preprocess_example(self, example, mode, hparams):
-    example = super().preprocess_example(example, mode, hparams)
+    example = super().preprocess_example(example, mode, hparams, "GM12878", "H1-hESC")
     # Indices for TF labels specific to GM12878 cell type.
     # These are ordered so TFs are alphabetical
     
@@ -794,7 +795,6 @@ class Gm12878DeepseaProblem(TftiDeepseaProblem):
     example["latents"] = tf.gather(latents, argsort_indices)
     example["metrics_weights"] = tf.gather(metrics_weights, argsort_indices)
     return example
-
 
 @registry.register_problem("genomics_binding_deepsea_h1hesc")
 class H1hescDeepseaProblem(TftiDeepseaProblem):
@@ -844,13 +844,22 @@ class TftiMulticellProblem(TftiDeepseaProblem):
   def test_cell_type(self):
     return self.cell_types[-1]
 
-  def get_overlapping_indices_multicell(self):
-    """Gets target indices for transcription factors for the intersection
-    of call cell types.
+  def targets_gather_indices(self, cell_type):
+    """Returns indices to gather `targets`, `latents` and `metrics_weights`.
 
     Returns:
-      Dict of lists of indices in each cell of the intersection of all cells.
+      A list of indices between [0, self.num_binary_predictions).
+    """
+    return self.get_overlapping_indices_multicell()[0][cell_type]
+
+  def get_overlapping_indices_multicell(self):
+    """Gets target indices for transcription factors for the intersection
+    of all cell types.
+
+    Returns:
+      Tuple(0) Dict of lists of indices in each cell of the intersection of all cells.
       These indices are listed in alphabetical order for consistency.
+      Tuple(1) List of Marks
     """
 
     dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -919,15 +928,21 @@ class TftiMulticellProblem(TftiDeepseaProblem):
 
     return cell_indices, valid_tfs
 
-  def preprocess_example(self, example, mode, hparams):
+  def preprocess_example(self, example, mode, hparams, cell_type = None):
     """Makes one example for each cell type, including only intersecting marks.
 
     See base class for method signature.
     """
-
     base_example = super().preprocess_example(example, mode, hparams)
-
     gather_indices, _ = self.get_overlapping_indices_multicell()
+    
+    # just 1 datapoint for 1 celltype
+    if (cell_type):
+        tf.logging.info(example)
+        print(base_example)
+        for key in ["targets", "latents", "metrics_weights"]:
+          base_example[key] = tf.gather(base_example[key], gather_indices[cell_type])
+        return base_example
 
     dataset = None
 
